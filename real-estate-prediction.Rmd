@@ -1,0 +1,188 @@
+---
+title: "Predicting Taiwanese Real Estate Using Linear Regression Models"
+author: "Sikem Nkwawir"
+output: word_document
+date: "07/05/2025"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+Estimating residential property prices on a per‐unit‐area basis is critical for a wide range of stakeholders including prospective home-buyers and sellers who need accurate valuations to negotiate purchases, mortgage lenders and banks that rely on valuations to offer loans without taking on too much risk, planners and politicians who use neighborhood price trends to monitor housing affordability and inform zoning decisions, and real‐estate investors that depend on accurate pricing models to evaluate housing markets. To address this need, we turned to the Real Estate Valuation dataset curated by Yeh (2018) from the UCI Machine Learning Repository. Collected in Sindian District, New Taipei City, Taiwan, it records 414 transactions along with six predictors (transaction date, house age, distance to the nearest MRT station, count of nearby convenience stores, latitude and longitude) and the corresponding price in 10,000 New Taiwan Dollars per Ping.
+
+# Methods
+We began with a standard least squares, linear regression model using all six predictors to establish a baseline. Diagnostic plots (residuals vs. fitted, Normal Q–Q, scale–location, Cook’s distance) revealed some possible heteroskedasticity and extremes that deviate from normality, Variance inflation factors showed no concerning multicollinearity, a Durbin–Watson test indicated residual independence, and a Shapiro–Wilk test formally rejected perfect normality, however, with over 200 observations we can assume that our predictions will still be accurate. Next, we applied stepwise model selection (both forward and backward using AIC) to reduce the number of coefficients down to the five most important, dropping longitude, resulting in virtually identical performance. Finally, we fitted a Lasso model using five-fold cross-validation to choose the optimal regularization parameter. This approach reduced the coefficients toward zero, slightly lowering test RMSE and raising R^2. Initially, we also experimented with adding interaction terms, but found they increased complexity while lowering accuracy, so we eventually abandoned them. Together, these three approaches demonstrate that no single model is perfect, with each having trade-offs among bias, variance, interpretability, and adherence to linear assumptions.
+
+# Conclusion
+On test data, all three models achieved similar accuracy (R^2 = ~0.63; RMSE = ~8.1), with Lasso having slightly better performance and the stepwise model offering the simplest formula. The traditional linear model remains valuable for its ease, stepwise selection further simplifies the model, and Lasso provides a bias-variance balance that is well-suited for use via code. Ultimately, the choice of model should align with stakeholder priorities: regulators and appraisers may favor the stepwise model for its clarity, while online platforms seeking optimal prediction accuracy may implement the Lasso model. Personally, we would suggest the stepwise model, as it is the simplest model and does not forego much in the way of predictive performance. Future work could explore the use of more robust models or even a combination of stepwise selection and Lasso penalization, which would likely further improve the model.
+
+# References. 
+Yeh, I. (2018). Real Estate Valuation [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5J30W.
+
+# Acknowledgements
+
+# Full Code and Observations
+```{r}
+# install.packages(c("MASS","glmnet","caret","ggplot2","gridExtra"))
+library(MASS)       # for stepAIC()
+library(glmnet)     # for Lasso
+library(caret)      # for data splitting & metrics
+library(ggplot2)    # for plotting
+library(gridExtra)  # for arranging plots
+
+set.seed(42)
+```
+
+```{r}
+# Splitting the data for modelling
+df <- read.csv("real_estate.csv", row.names=1)
+colnames(df) <- c("X1","X2","X3","X4","X5","X6","Y")
+
+train_idx <- createDataPartition(df$Y, p = 2/3, list = FALSE)
+train <- df[train_idx, ]
+test  <- df[-train_idx, ]
+
+x_train <- train[,1:6]; y_train <- train$Y
+x_test  <- test[,1:6];  y_test  <- test$Y
+```
+First we will start off by splitting the data into training and testing data. All subsequent tests and model building will be completed using the training data and the final comparisons will be done using the test data. Orignally, we were going to remove date as a predictor, but after some thought we realized that the data when the transaction occurred was capturing information about the market at the time. This would undoubtedly influence the purchase price and allow the predictions made in the future increase as time goes forward.
+
+```{r}
+# Linear Regression Model
+lm_mod <- lm(Y ~ ., data = train)
+summary(lm_mod)
+```
+
+```{r}
+# Linear Assumption Check
+
+# 4-panel diagnostic plots
+par(mfrow = c(2, 2))
+plot(lm_mod, which = 1:4)
+```
+Residuals vs Fitted: Points form a roughly horizontal cloud but show a slight spreading as the fitted values get higher, indicating some heteroskedasticity. Based on this, we can assume linearity.
+
+Normal Q–Q: Most points fall along the QQ line, but the extremes deviate. This is evidence of some non-normality in the extremes.
+
+Scale–Location: The standardized residuals are fairly flat across fitted values, matching the finding of the residuals vs fitted plot which suggests only a mild heteroskedasticity issue.
+
+Cook’s Distance: No points exceed the cutoff value (4 / (n–p) ≈ 0.017), so no single observation strongly influences the fit.
+
+```{r}
+# 2. Variance Inflation Factors (multicollinearity)
+library(car)
+vif_vals <- vif(lm_mod)
+print(vif_vals)
+```
+All VIFs are below 5, so we can assume there is no multicollinearity between the predictors.
+
+```{r}
+# 3. Durbin–Watson test (independence)
+library(lmtest)
+dw <- dwtest(lm_mod)
+print(dw)
+```
+Since the DW is close to 2, we can assume that the residuals are independent.
+
+```{r}
+# 4. Shapiro–Wilk test of residual normality
+shapiro <- shapiro.test(residuals(lm_mod))
+print(shapiro)
+```
+While the residuals fail the Shapiro-Wilks test, based on the previous plots, we have such a large dataset that this should not cause any issues in our predictions.
+
+```{r}
+# Model 2: Stepwise feature selection  
+
+step_mod <- stepAIC(lm_mod,
+                   direction = "both",
+                   trace     = FALSE)
+
+cat("Stepwise selected model:\n")
+print(formula(step_mod))
+```
+Stepwise AIC dropped X6 (longitude), while the other 5 predictors remained in the model.
+
+```{r}
+# Model 3: Lasso with cross‐validation 
+
+xmat_train <- as.matrix(x_train)
+xmat_test  <- as.matrix(x_test)
+
+cv_lasso <- cv.glmnet(xmat_train, y_train,
+                      alpha  = 1,
+                      nfolds = 5)
+
+lasso_mod <- glmnet(xmat_train, y_train,
+                    alpha  = 1,
+                    lambda = cv_lasso$lambda.min)
+
+cat("Chosen lambda for Lasso:", cv_lasso$lambda.min, "\n")
+```
+Five fold cross validation selects 0.216 as the ideal lambda. This balances the bias and variance by  lowering the coefficients, which should theoretically lower the MSE.
+
+```{r}
+# Predict & evaluate on test set
+
+eval_metrics <- function(actual, pred) {
+  data.frame(
+    RMSE = RMSE(pred, actual),
+    R2   = R2(pred, actual)
+  )
+}
+
+pred_lm  <- predict(lm_mod, newdata = test)
+pred_step  <- predict(step_mod, newdata = test)
+pred_lasso <- as.numeric(predict(lasso_mod, xmat_test))
+
+res_lm  <- eval_metrics(y_test, pred_lm)
+res_step  <- eval_metrics(y_test, pred_step)
+res_lasso <- eval_metrics(y_test, pred_lasso)
+
+results <- rbind(
+  Trad_LM     = res_lm,
+  Stepwise_LM = res_step,
+  Lasso        = res_lasso
+)
+print(results)
+```
+Based on the test RMSE and R^2, we can see that there is very little difference between all three models, with the Lasso penalized model being the best.
+
+```{r}
+# Plot Actual vs Predicted 
+
+p1 <- ggplot(data.frame(Actual=y_test, Pred=pred_lm),
+             aes(Actual,Pred)) +
+  geom_point(alpha=0.6) + geom_abline(linetype="dashed") +
+  labs(title="Traditional LM")
+
+p2 <- ggplot(data.frame(Actual=y_test, Pred=pred_step),
+             aes(Actual,Pred)) +
+  geom_point(alpha=0.6) + geom_abline(linetype="dashed") +
+  labs(title="Stepwise LM")
+
+p3 <- ggplot(data.frame(Actual=y_test, Pred=pred_lasso),
+             aes(Actual,Pred)) +
+  geom_point(alpha=0.6) + geom_abline(linetype="dashed") +
+  labs(title="Lasso")
+
+grid.arrange(p1,p2,p3, ncol=3)
+```
+
+The three plots show just how close the models are in terms of prediction accuracy. Each of the plots is nearly identical.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
